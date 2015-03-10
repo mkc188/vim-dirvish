@@ -183,13 +183,18 @@ function! s:new_dirvish()
       let w:dirvish.orig_conceallevel = &l:conceallevel
       setlocal concealcursor=nvc conceallevel=3
 
-      syntax match DirvishPathHead '\v.*\/\ze[^\/]+\/?$' conceal
+      if get(g:, 'dirvish_show_relative', 0)
+        exe 'syntax match DirvishPathHead '''.'\V\^'. escape(s:normalize_dir(getcwd()), '\') ..''' conceal'
+      else
+        syntax match DirvishPathHead '\v.*\/\ze[^\/]+\/?$' conceal
+      endif
+
       syntax match DirvishPathTail '\v[^\/]+\/$'
       highlight! link DirvishPathTail Directory
 
       augroup dirvish_syntaxteardown
         autocmd!
-        "restore window-local settings
+        "restore window'-local settings
         autocmd BufHidden,BufWipeout,BufUnload,BufDelete <buffer> if exists('w:dirvish')
               \ |   let &l:concealcursor = w:dirvish.orig_concealcursor
               \ |   let &l:conceallevel = w:dirvish.orig_conceallevel
