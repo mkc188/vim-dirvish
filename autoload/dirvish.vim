@@ -254,6 +254,10 @@ function! s:new_dirvish()
     execute "nmap <nowait><buffer><silent> " . popout_key . "<CR> <Plug>(dirvish_bgVisitTarget)"
 
     nmap <nowait><buffer><silent> u <Plug>(dirvish_focusOnParent)
+
+    " Movement keys
+    map <nowait><buffer><silent> h <Plug>(dirvish_focusOnParent)
+    map <nowait><buffer><silent> l <Plug>(dirvish_visitTarget)
   endfunction
 
   function! l:obj.render_buffer() abort dict
