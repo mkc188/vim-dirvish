@@ -24,24 +24,25 @@
 " Fixed bug: 'buffer <num>' may open buffer with actual number name.
 
 let s:sep = has("win32") ? '\' : '/'
+let s:noswapfile = (2 == exists(':noswapfile')) ? 'noswapfile' : ''
 
 function! s:new_notifier()
   let m = {}
 
-  function! m.format(leader, msg) dict
-    return "dirvish: " . a:leader.a:msg
+  function! m.format(msg) dict
+    return "dirvish: ".a:msg
   endfunction
   function! m.error(msg) dict
     redraw
-    echohl ErrorMsg | echomsg self.format("", a:msg) | echohl None
+    echohl ErrorMsg | echomsg self.format(a:msg) | echohl None
   endfunction
   function! m.warn(msg) dict
     redraw
-    echohl WarningMsg | echomsg self.format("", a:msg) | echohl None
+    echohl WarningMsg | echomsg self.format(a:msg) | echohl None
   endfunction
   function! m.info(msg) dict
     redraw
-    echohl None | echo self.format("", a:msg)
+    echohl None | echo self.format(a:msg)
   endfunction
 
   return m
@@ -50,6 +51,7 @@ endfunction
 function! s:normalize_dir(dir)
   if !isdirectory(a:dir)
     echoerr 'not a directory:' a:dir
+    return
   endif
   let dir = fnamemodify(a:dir, ':p') "always full path
   let dir = substitute(a:dir, s:sep.'\+', s:sep, 'g') "replace consecutive slashes
@@ -62,6 +64,7 @@ endfunction
 function! s:parent_dir(dir)
   if !isdirectory(a:dir)
     echoerr 'not a directory:' a:dir
+    return
   endif
   return s:normalize_dir(fnamemodify(a:dir, ":p:h:h"))
 endfunction
@@ -103,11 +106,33 @@ function! s:new_dirvish()
     endif
 
     let bnr = bufnr('^' . d.dir . '$')
+
+    " Vim tends to name the directory buffer using its relative path.
+    " Examples (observed on Win32 gvim 7.4.618):
+    "     ~\AppData\Local\Temp\
+    "     ~\AppData\Local\Temp
+    "     AppData\Local\Temp\
+    "     AppData\Local\Temp
+    " Try to find the existing relative-path name before creating a new one.
+    for pat in [':~:.', ':~']
+      if -1 != bnr
+        break
+      endif
+
+      let modified_dirname = fnamemodify(d.dir, pat)
+      let modified_dirname_without_sep = substitute(modified_dirname, '[\\/]\+$', '', 'g')
+
+      let bnr = bufnr('^'.modified_dirname.'$')
+      if -1 == bnr
+        let bnr = bufnr('^'.modified_dirname_without_sep.'$')
+      endif
+    endfor
+
     try
       if -1 == bnr
-        execute 'silent noau keepjumps noswapfile edit ' . fnameescape(d.dir)
+        execute 'silent noau keepjumps '.s:noswapfile.' edit ' . fnameescape(d.dir)
       else
-        execute 'silent noau keepjumps noswapfile '.bnr.'buffer'
+        execute 'silent noau keepjumps '.s:noswapfile.' '.bnr.'buffer'
       endif
     catch /E37:/
       call s:notifier.error("E37: No write since last change")
@@ -117,14 +142,24 @@ function! s:new_dirvish()
     "HACK: If the directory was visited via an alias like '.', '..',
     "      'foo/../..', then Vim refuses to create a buffer with the expanded
     "      name even though we told it to in our :edit command above--instead,
-    "      Vim resolves to the aliased name. To prevent this, rename to the
-    "      fully-expanded path via :file.
-    if bufname('%') !=# d.dir && empty(getline(1)) && 1 == line('$')
-      execute 'silent noau keepjumps noswapfile file ' . fnameescape(d.dir)
+    "      Vim resolves to the aliased name. We _could_ rename to the
+    "      fully-expanded path via :file, but instead we just update our state
+    "      to match Vim's preferred buffer name, because:
+    "         - it avoids an extra buffer
+    "         - it avoids incrementing the buffer number
+    "         - it avoids a spurious *alternate* buffer
+    if bufname('%') !=# d.dir
+      if isdirectory(bufname('%'))
+        " Just use the name Vim wants (avoid incrementing the buffer number).
+        let d.dir = bufname('%')
+      else " [This should never happen] Rename to the fully-expanded path.
+        execute 'silent noau keepjumps '.s:noswapfile.' file ' . fnameescape(d.dir)
+      endif
     endif
 
     if bufname('%') !=# d.dir  "sanity check. If this fails, we have a bug.
       echoerr 'expected buffer name: "'.d.dir.'" (actual: "'.bufname('%').'")'
+      return
     endif
 
     let d.buf_num = bufnr('%')
@@ -143,9 +178,10 @@ function! s:new_dirvish()
     call b:dirvish.setup_buffer_syntax()
     call b:dirvish.setup_buffer_keymaps()
 
-    if line('$') == 1
-      call b:dirvish.render_buffer()
-    endif
+    call b:dirvish.render_buffer()
+
+    "clear our 'loading...' message
+    redraw | echo ''
   endfunction
 
   function! l:obj.setup_buffer_opts() abort dict
@@ -191,37 +227,29 @@ function! s:new_dirvish()
   endfunction
 
   function! l:obj.setup_buffer_keymaps() dict
-    " Avoid 'cannot modify' error for  keys.
-    for key in [".", "p", "P", "C", "x", "X", "r", "R", "i", "I", "a", "A", "D", "S", "U"]
-      if !hasmapto(key, 'n')
-        execute "nnoremap <buffer> " . key . " <NOP>"
-      endif
-    endfor
-
     let popout_key = get(g:, 'dirvish_popout_key', 'p')
     let normal_map = {}
     let visual_map = {}
 
-    let normal_map['dirvish_refresh'] = 'R'
     let normal_map['dirvish_setFilter'] = 'f'
     let normal_map['dirvish_toggleFilter'] = 'F'
     let normal_map['dirvish_toggleHidden'] = 'gh'
     let normal_map['dirvish_quit'] = 'q'
 
-    let normal_map['dirvish_visitTarget'] = 'o'
-    let visual_map['dirvish_visitTarget'] = 'o'
-    let normal_map['dirvish_bgVisitTarget'] = popout_key . 'o'
-    let visual_map['dirvish_bgVisitTarget'] = popout_key . 'o'
+    let normal_map['dirvish_visitTarget'] = 'i'
+    let visual_map['dirvish_visitTarget'] = 'i'
+    let normal_map['dirvish_bgVisitTarget'] = popout_key . 'i'
+    let visual_map['dirvish_bgVisitTarget'] = popout_key . 'i'
 
     let normal_map['dirvish_splitVerticalVisitTarget'] = 'v'
     let visual_map['dirvish_splitVerticalVisitTarget'] = 'v'
     let normal_map['dirvish_bgSplitVerticalVisitTarget'] = popout_key . 'v'
     let visual_map['dirvish_bgSplitVerticalVisitTarget'] = popout_key . 'v'
 
-    let normal_map['dirvish_splitVisitTarget'] = 's'
-    let visual_map['dirvish_splitVisitTarget'] = 's'
-    let normal_map['dirvish_bgSplitVisitTarget'] = popout_key . 's'
-    let visual_map['dirvish_bgSplitVisitTarget'] = popout_key . 's'
+    let normal_map['dirvish_splitVisitTarget'] = 'o'
+    let visual_map['dirvish_splitVisitTarget'] = 'o'
+    let normal_map['dirvish_bgSplitVisitTarget'] = popout_key . 'o'
+    let visual_map['dirvish_bgSplitVisitTarget'] = popout_key . 'o'
 
     let normal_map['dirvish_tabVisitTarget'] = 't'
     let visual_map['dirvish_tabVisitTarget'] = 't'
@@ -263,6 +291,7 @@ function! s:new_dirvish()
   function! l:obj.render_buffer() abort dict
     if !isdirectory(bufname('%'))
       echoerr 'dirvish: fatal: buffer name is not a directory:' bufname('%')
+      return
     endif
 
     let old_lazyredraw = &lazyredraw
@@ -298,7 +327,7 @@ function! s:new_dirvish()
   function! l:obj.visit_prevbuf() abort dict
     if self.prevbuf != bufnr('%') && bufexists(self.prevbuf)
           \ && type({}) != type(getbufvar(self.prevbuf, 'dirvish'))
-      exe 'noswapfile '.self.prevbuf.'buffer'
+      exe s:noswapfile.' '.self.prevbuf.'buffer'
       return 1
     endif
 
@@ -319,7 +348,7 @@ function! s:new_dirvish()
 
   function! l:obj.visit_altbuf() abort dict
     if bufexists(self.altbuf) && type({}) != type(getbufvar(self.altbuf, 'dirvish'))
-      exe 'noswapfile '.self.altbuf.'buffer'
+      exe s:noswapfile.' '.self.altbuf.'buffer'
     endif
   endfunction
 
@@ -339,6 +368,8 @@ function! s:new_dirvish()
     let endline   = v:count ? v:count : a:lastline
 
     let curtab = tabpagenr()
+    let curwin = winnr()
+    let wincount = winnr('$')
     let old_lazyredraw = &lazyredraw
     set lazyredraw
     let splitcmd = a:split_cmd
@@ -375,10 +406,12 @@ function! s:new_dirvish()
       endtry
     endfor
 
-    if a:open_in_background
-      "return to dirvish buffer
-      exe 'tabnext' curtab '|' bufwinnr(self.buf_num) . 'wincmd w'
-      if a:split_cmd ==# 'edit'
+    if a:open_in_background "return to dirvish buffer
+      if a:split_cmd ==# 'tabedit'
+        exe 'tabnext' curtab '|' curwin.'wincmd w'
+      elseif winnr('$') > wincount
+        exe 'wincmd p'
+      elseif a:split_cmd ==# 'edit'
         execute 'silent keepalt keepjumps ' . self.buf_num . 'buffer'
       endif
     elseif !exists('b:dirvish')
@@ -457,8 +490,10 @@ function! dirvish#open(dir)
   endif
 
   if exists('b:dirvish') && dir ==# s:normalize_dir(b:dirvish.dir)
-    "current buffer is already viewing that directory.
-    return
+    "current buffer is already showing that directory.
+    call s:notifier.info('reloading...')
+  else
+    call s:notifier.info('loading...')
   endif
 
   let d = s:new_dirvish()
